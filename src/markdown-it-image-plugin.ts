@@ -37,7 +37,7 @@ function plugin( md : MarkdownIt ) : void
 {  
     md.inline.ruler.after( "image", tokenType, ( state, silent ) =>  
     {  
-        const regex = /^!\[\[([^|\]\n]+)(\|([^\]\n]+))?\]\]/;  
+        const regex = /^!\[\[([^|\]\n]+)((\|[^|\]\n]+)*)?\]\]/;  
         const match = state.src.slice( state.pos ).match( regex );  
         
         if ( match )  
@@ -49,35 +49,36 @@ function plugin( md : MarkdownIt ) : void
             
             const token = state.push( tokenType, "img", 0 );  
             
-            const matched = match[ 0 ];  
-            const src     = match[ 1 ];  
-            const size    = match[ 3 ];  
+            const matched  = match[ 0 ];  
+            const src      = match[ 1 ];  
+            const options = match[ 2 ] ? match[ 2 ].split( '|' ).slice( 1 ) : [];
             
             let width  : string | undefined;  
             let height : string | undefined;  
+            let align  : string | undefined;
             
-            if ( size )  
-            {  
-                const sepIndex = size.indexOf( "x" ); // width x height  
-                
-                if ( sepIndex > 0 )  
-                {  
-                    width  = trim( size.substring( 0, sepIndex ) );  
-                    height = trim( size.substring( sepIndex + 1 ) );  
-                    
-                    token.attrs = [ [ "src", src ], [ "width", width ], [ "height", height ] ];  
-                }  
-                else  
-                {  
-                    width = trim( size );  
-                    
-                    token.attrs = [ [ "src", src ], [ "width", width ] ];  
-                }  
-            }  
-            else  
-            {  
-                token.attrs = [ [ "src", src ] ];  
-            }  
+            options.forEach( opt => 
+            {
+                if ( opt === 'center' || opt === 'left' || opt === 'right' )
+                {
+                    align = opt;
+                }
+                else if ( /^\d+x\d+$/.test( opt ) )
+                {
+                    [ width, height ] = opt.split( 'x' );
+                }
+                else if ( /^\d+$/.test( opt ) )
+                {
+                    width = opt;
+                }
+            } );
+            
+            token.attrs = [ [ "src", src ] ];
+            
+            if ( width )  token.attrs.push( [ "width",  width  ] );
+            if ( height ) token.attrs.push( [ "height", height ] );
+            if ( align )  token.attrs.push( [ "align",  align  ] );
+            
             if ( pluginOptions.doWithImage )  
             {  
                 pluginOptions.doWithImage
@@ -103,10 +104,28 @@ function plugin( md : MarkdownIt ) : void
         const token = tokens[ idx ];  
         
         const src    = token.attrs?.[ 0 ]?.[ 1 ];  
-        const width  = token.attrs?.[ 1 ]?.[ 1 ];  
-        const height = token.attrs?.[ 2 ]?.[ 1 ];  
         
-        if ( width )  
+        const width  = token.attrs?.find( a => a[ 0 ] === 'width'  )?.[ 1 ];  
+        const height = token.attrs?.find( a => a[ 0 ] === 'height' )?.[ 1 ];  
+        const align  = token.attrs?.find( a => a[ 0 ] === 'align'  )?.[ 1 ];
+        
+        let style = '';
+        
+        if ( width  ) style += `width:${ width }px;`;
+        if ( height ) style += `height:${ height }px;`;
+        
+        let alignClass = '';
+        
+        if ( align === 'center' ) alignClass = ' aligncenter';
+        if ( align === 'left'   ) alignClass = ' alignleft';
+        if ( align === 'right'  ) alignClass = ' alignright';
+        
+        if ( align )
+        {
+            return `<figure class="wp-block-image ${ alignClass }"><img src="${ src }" style="${ style }" alt=""/></figure>`;
+        }
+        
+        if ( width )
         {  
             if ( height )  
             {  
