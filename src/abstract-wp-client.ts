@@ -196,14 +196,14 @@ export abstract class AbstractWordPressClient implements WordPressClient
             {
                 if ( !img.srcIsUrl )
                 {
+                    img.src = img.src.split( '|' )[ 0 ];
                     img.src = decodeURI( img.src );
-                    const fileName = img.src.split( "/" )
-                    .pop();
+                    const fileName = img.src.split( "/" ).pop();
                     if ( fileName === undefined )
                     {
                         continue;
                     }
-                    const imgFile = this.plugin.app.metadataCache.getFirstLinkpathDest( img.src, fileName );
+                    const imgFile    = this.plugin.app.metadataCache.getFirstLinkpathDest( img.src, fileName );
                     if ( imgFile instanceof TFile )
                     {
                         const content = await this.plugin.app.vault.readBinary( imgFile );
@@ -443,12 +443,14 @@ function getImages( content : string ) : Image[]
         } );
     }
 
-    // for ![[image-name]]
-    regex = /(!\[\[(.*?)(?:\|(\d+)(?:x(\d+))?)?]])/g;
+    // for ![[image-name|옵션...]]
+    regex = /(!\[\[([^\]]+)\]\])/g;
     while ( ( match = regex.exec( content ) ) !== null )
     {
+        const srcRaw = match[ 2 ];
+        const src = srcRaw.split( '|' )[ 0 ];
         paths.push( {
-            src : match[ 2 ], original : match[ 1 ], width : match[ 3 ], height : match[ 4 ], startIndex : match.index, endIndex : match.index + match.length, srcIsUrl : isValidUrl( match[ 2 ] )
+            src : src, original : match[ 1 ], width : undefined, height : undefined, startIndex : match.index, endIndex : match.index + match.length, srcIsUrl : isValidUrl( src )
         } );
     }
 
