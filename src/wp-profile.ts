@@ -1,70 +1,70 @@
-import { WordPressOAuth2Token } from './oauth2-client';
-import { ApiType } from './plugin-settings';
-import { PostType } from './wp-api';
+import { WordPressOAuth2Token } from "./oauth2-client";
+import { ApiType } from "./plugin-settings";
+import { PostType } from "./wp-api";
 
-export interface WpProfile {
 
-  /**
-   * Profile name.
-   */
-  name: string;
+export interface WpProfile
+{
 
-  /**
-   * API type.
-   */
-  apiType: ApiType;
+    /**
+     * Profile name.
+     */
+    name : string;
 
-  /**
-   * Endpoint.
-   */
-  endpoint: string;
+    /**
+     * API type.
+     */
+    apiType : ApiType;
 
-  /**
-   * XML-RPC path.
-   */
-  xmlRpcPath?: string;
+    /**
+     * Endpoint.
+     */
+    endpoint : string;
 
-  /**
-   * WordPress username.
-   */
-  username?: string;
+    /**
+     * XML-RPC path.
+     */
+    xmlRpcPath? : string;
 
-  /**
-   * WordPress password.
-   */
-  password?: string;
+    /**
+     * WordPress username.
+     */
+    username? : string;
 
-  /**
-   * Encrypted password which will be saved locally.
-   */
-  encryptedPassword?: {
-    encrypted: string;
-    key?: string;
-    vector?: string;
-  };
+    /**
+     * WordPress password.
+     */
+    password? : string;
 
-  /**
-   * OAuth2 token for wordpress.com
-   */
-  wpComOAuth2Token?: WordPressOAuth2Token;
+    /**
+     * Encrypted password which will be saved locally.
+     */
+    encryptedPassword? : {
+        encrypted : string; key? : string; vector? : string;
+    };
 
-  /**
-   * Save username to local data.
-   */
-  saveUsername: boolean;
+    /**
+     * OAuth2 token for wordpress.com
+     */
+    wpComOAuth2Token? : WordPressOAuth2Token;
 
-  /**
-   * Save user password to local data.
-   */
-  savePassword: boolean;
+    /**
+     * Save username to local data.
+     */
+    saveUsername : boolean;
 
-  /**
-   * Is default profile.
-   */
-  isDefault: boolean;
+    /**
+     * Save user password to local data.
+     */
+    savePassword : boolean;
 
-  /**
-   * Last selected post categories.
-   */
-  lastSelectedCategories: number[];
+    /**
+     * Is default profile.
+     */
+    isDefault : boolean;
+
+    /**
+     * Last selected post categories.
+     */
+    lastSelectedCategories : number[];
 }

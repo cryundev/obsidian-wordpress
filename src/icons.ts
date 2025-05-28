@@ -1,7 +1,8 @@
-import { addIcon } from 'obsidian';
+import { addIcon } from "obsidian";
 
-const icons: Record<string, string> = {
-  'wp-logo': `
+
+const icons : Record<string, string> = {
+    "wp-logo" : `
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
   <g fill="currentColor">
     <path d="M 7.109375 50 C 7.109375 66.976562 16.976562 81.648438 31.28125 88.601562 L 10.820312 32.542969 C 8.441406 37.878906 7.109375 43.78125 7.109375 50 Z M 7.109375 50 "/>
@@ -13,8 +14,11 @@ const icons: Record<string, string> = {
 </svg>`
 };
 
-export const addIcons = (): void => {
-  Object.keys(icons).forEach((key) => {
-    addIcon(key, icons[key]);
-  });
+export const addIcons = () : void =>
+{
+    Object.keys( icons )
+    .forEach( ( key ) =>
+    {
+        addIcon( key, icons[ key ] );
+    } );
 };
