@@ -489,18 +489,36 @@ export abstract class AbstractWordPressClient implements WordPressClient
         const blocks : string[] = [];
 
         // 모든 매치를 인덱스와 함께 수집
-        interface Match
-        {
+        type HtmlMatch = {
             type        : string;
             content     : string;
             attributes? : string;
             index       : number;
             length      : number;
             original    : string;
-        }
+        };
 
-
-        const allMatches : Match[] = [];
+        const allMatches : HtmlMatch[] = [];
+        
+        // 이미 처리된 범위를 추적하기 위한 배열 (중복 처리 방지)
+        const processedRanges : {start: number, end: number}[] = [];
+        
+        // 범위가 이미 처리되었는지 확인하는 함수
+        const isRangeProcessed = (start: number, end: number) => 
+        {
+            return processedRanges.some
+            (
+                range => 
+                ( start >= range.start && start <  range.end ) || 
+                ( end   >  range.start && end   <= range.end ) ||
+                ( start <= range.start && end   >= range.end )
+            );
+        };
+        
+        // 처리된 범위 추가 함수
+        const addProcessedRange = (start: number, end: number) => {
+            processedRanges.push({start, end});
+        };
 
         // 제목 태그 처리
         this.collectMatches( html, /<h([1-6])>([\s\S]*?)<\/h\1>/g, ( match ) =>
@@ -520,17 +538,67 @@ export abstract class AbstractWordPressClient implements WordPressClient
             } );
         } );
 
+        // 인용구 태그 처리
+        this.collectMatches( html, /<blockquote>([\s\S]*?)<\/blockquote>/g, ( match ) =>
+        {
+            // 이미 처리된 범위인지 확인
+            if ( isRangeProcessed( match.index, match.index + match[ 0 ].length ) )
+            {
+                return;
+            }
+            
+            // 콜아웃 문법이 포함된 경우 Alerts 블록으로 변환
+            if ( this.hasCalloutSyntax( match[ 1 ] ) )
+            {
+                this.processCalloutContent( match[ 0 ], match[ 1 ], match.index, allMatches );
+                // 처리된 범위 추가
+                addProcessedRange(match.index, match.index + match[0].length);
+            }
+            else
+            {
+                // 일반 인용구 처리
+                allMatches.push
+                ( {
+                    type     : "quote", 
+                    content  : `<blockquote class="wp-block-quote">${ match[ 1 ] }</blockquote>`, 
+                    index    : match.index, 
+                    length   : match[ 0 ].length, 
+                    original : match[ 0 ]
+                } );
+                // 처리된 범위 추가
+                addProcessedRange(match.index, match.index + match[0].length);
+            }
+        } );
+        
         // 단락 태그 처리
         this.collectMatches( html, /<p>([\s\S]*?)<\/p>/g, ( match ) =>
         {
-            allMatches.push
-            ( {
-                type     : "paragraph", 
-                content  : `<p>${ match[ 1 ] }</p>`, 
-                index    : match.index, 
-                length   : match[ 0 ].length, 
-                original : match[ 0 ]
-            } );
+            // 이미 처리된 범위인지 확인
+            if ( isRangeProcessed( match.index, match.index + match[ 0 ].length ) )
+            {
+                return;
+            }
+            
+            // 콜아웃 문법이 포함된 경우 Alerts 블록으로 변환
+            if ( this.hasCalloutSyntax( match[ 1 ] ) )
+            {
+                this.processCalloutContent( match[ 0 ], match[ 1 ], match.index, allMatches );
+                // 처리된 범위 추가
+                addProcessedRange(match.index, match.index + match[0].length);
+            }
+            else
+            {
+                allMatches.push
+                ( {
+                    type     : "paragraph", 
+                    content  : `<p>${ match[ 1 ] }</p>`, 
+                    index    : match.index, 
+                    length   : match[ 0 ].length, 
+                    original : match[ 0 ]
+                } );
+                // 처리된 범위 추가
+                addProcessedRange(match.index, match.index + match[0].length);
+            }
         } );
 
         // 목록 태그 처리
@@ -573,19 +641,6 @@ export abstract class AbstractWordPressClient implements WordPressClient
             } );
         } );
 
-        // 인용구 태그 처리
-        this.collectMatches( html, /<blockquote>([\s\S]*?)<\/blockquote>/g, ( match ) =>
-        {
-            allMatches.push
-            ( {
-                type     : "quote", 
-                content  : `<blockquote class="wp-block-quote">${ match[ 1 ] }</blockquote>`, 
-                index    : match.index, 
-                length   : match[ 0 ].length, 
-                original : match[ 0 ]
-            } );
-        } );
-        
         // <br /> 태그 처리 - 워드프레스 스페이서 블록으로 변환
         this.collectMatches( html, /<br\s*\/?>/g, ( match ) =>
         {
@@ -697,6 +752,71 @@ ${ content }
         return `<!-- wp:paragraph -->
 <p>${ text }</p>
 <!-- /wp:paragraph -->`;
+    }
+
+    /**
+     * 텍스트에 콜아웃 문법([!info], [!warning] 등)이 포함되어 있는지 확인합니다.
+     */
+    private hasCalloutSyntax( content : string ) : boolean
+    {
+        return /\[!(info|warning|note|tip|caution|danger|success|failure|bug|example|quote|cite|abstract|summary|tldr|info\+|question|help|faq|error)\]/i.test( content );
+    }
+
+    /**
+     * 콜아웃 내용을 워드프레스 Alerts 블록으로 변환합니다.
+     */
+    private processCalloutContent( original : string, content : string, index : number, allMatches : any[] ) : void
+    {
+        // 콜아웃 유형과 제목 추출
+        const calloutMatch = content.match( /\[!(info|warning|note|tip|caution|danger|success|failure|bug|example|quote|cite|abstract|summary|tldr|info\+|question|help|faq|error)\]\s*([^\n]*)/i );
+        
+        if ( calloutMatch )
+        {
+            // 콜아웃 유형
+            const calloutType = calloutMatch[ 1 ].toLowerCase();
+            
+            // 제목은 콜아웃 태그 이후의 텍스트, 없으면 유형의 첫 글자를 대문자로 사용
+            const calloutTitle = calloutMatch[ 2 ] ? calloutMatch[ 2 ].trim() : calloutType.charAt( 0 ).toUpperCase() + calloutType.slice( 1 );
+            
+            // 내용은 콜아웃 태그와 제목을 제외한 나머지 부분
+            let calloutContent = content
+                .replace( /\[!(info|warning|note|tip|caution|danger|success|failure|bug|example|quote|cite|abstract|summary|tldr|info\+|question|help|faq|error)\]\s*[^\n]*/i, "" )
+                .trim();
+            
+            // <p>, </p> 태그 제거
+            calloutContent = calloutContent.replace(/<\/?p>/g, "").trim();
+            
+            // 고유 ID 생성
+            const uniqueId = "alerts-dlx-" + Math.random().toString( 36 ).substring( 2, 10 );
+            
+            // 워드프레스 Alerts 유형 매핑
+            let alertType = "info";
+            if ( calloutType === "warning" || calloutType === "caution" || calloutType === "danger" )
+            {
+                alertType = "warning";
+            }
+            else if ( calloutType === "success" )
+            {
+                alertType = "success";
+            }
+            else if ( calloutType === "error" || calloutType === "failure" )
+            {
+                alertType = "error";
+            }
+            
+            // 매치 추가
+            allMatches.push
+            ( {
+                type       : "mediaron/alerts-dlx-chakra", 
+                content    : `<!-- wp:paragraph {"placeholder":""} -->
+"${calloutContent}"
+<!-- /wp:paragraph -->`,  
+                attributes : ` {"alertType":"${ alertType }","alertTitle":"${ calloutTitle }","maximumWidthUnit":"%","maximumWidth":"100","baseFontSize":13,"variant":"left-accent","uniqueId":"alerts-dlx-a5a9b48a","className":"is-style-${alertType}"}`,
+                index      : index, 
+                length     : original.length, 
+                original   : original
+            } );
+        }
     }
 }
 
