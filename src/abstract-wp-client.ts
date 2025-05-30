@@ -109,9 +109,15 @@ export abstract class AbstractWordPressClient implements WordPressClient
         }
     }
 
-    private async tryToPublish( params : {
-        postParams : WordPressPostParams, auth : WordPressAuthParams, updateMatterData? : ( matter : MatterData ) => void,
-    } ) : Promise<WordPressClientResult<WordPressPublishResult>>
+    private async tryToPublish
+    (
+        params : 
+        {
+            postParams        : WordPressPostParams, 
+            auth              : WordPressAuthParams, 
+            updateMatterData? : ( matter : MatterData ) => void,
+        }
+    ) : Promise<WordPressClientResult<WordPressPublishResult>>
     {
         const { postParams, auth, updateMatterData } = params;
         const tagTerms = await this.getTags( postParams.tags, auth );
@@ -119,8 +125,14 @@ export abstract class AbstractWordPressClient implements WordPressClient
         await this.updatePostImages( {
             auth, postParams
         } );
+        
+        // 처리된 마크다운을 HTML로 변환
         const html = AppState.markdownParser.render( postParams.content );
-        const result = await this.publish( postParams.title ?? "A post from Obsidian!", html, postParams, auth );
+        
+        // HTML을 워드프레스 블록으로 변환
+        const blockHtml = this.convertToWordPressBlocks( html );
+        
+        const result = await this.publish( postParams.title ?? "A post from Obsidian!", blockHtml, postParams, auth );
         if ( result.code === WordPressClientReturnCode.Error )
         {
             throw new Error( this.plugin.i18n.t( "error_publishFailed", {
@@ -411,21 +423,282 @@ export abstract class AbstractWordPressClient implements WordPressClient
         return postParams;
     }
 
+    /// 일반 HTML을 워드프레스 블록 형식으로 변환합니다. 이미 워드프레스 블록 형식인 경우 그대로 유지합니다.
+    private convertToWordPressBlocks( html : string ) : string
+    {
+        // 이미 워드프레스 블록 형식으로 감싸진 부분은 그대로 유지
+        const blocks : string[] = [];
+        const blockRegex = /<!-- wp:.*?-->([\s\S]*?)<!-- \/wp:.*?-->/g;
+        
+        // 기존 워드프레스 블록이 있는지 확인
+        let hasBlocks = blockRegex.test( html );
+        blockRegex.lastIndex = 0; // 정규식 인덱스 초기화
+        
+        if ( hasBlocks )
+        {
+            // 블록이 이미 있는 경우, 블록과 블록 사이의 내용을 적절히 처리
+            let lastIndex = 0;
+            let match;
+            
+            // 이미 블록 형식인 부분을 찾아서 보존
+            while ( ( match = blockRegex.exec( html ) ) !== null )
+            {
+                // 블록 이전의 텍스트가 있으면 처리
+                if ( match.index > lastIndex )
+                {
+                    const nonBlockHtml = html.substring( lastIndex, match.index ).trim();
+                    
+                    if ( nonBlockHtml )
+                    {
+                        // 중간 내용을 분석하여 적절한 블록으로 분할
+                        const intermediateBlocks = this.splitContentIntoBlocks( nonBlockHtml );
+                        blocks.push( ...intermediateBlocks );
+                    }
+                }
+                
+                // 기존 블록 유지
+                blocks.push( match[ 0 ] );
+                lastIndex = match.index + match[ 0 ].length;
+            }
+            
+            // 마지막 블록 이후의 텍스트가 있으면 처리
+            if ( lastIndex < html.length )
+            {
+                const remainingHtml = html.substring( lastIndex ).trim();
+                
+                if ( remainingHtml )
+                {
+                    const remainingBlocks = this.splitContentIntoBlocks( remainingHtml );
+                    blocks.push( ...remainingBlocks );
+                }
+            }
+        }
+        else
+        {
+            // 블록이 없는 경우, 전체 내용을 분석하여 블록으로 분할
+            const contentBlocks = this.splitContentIntoBlocks( html );
+            blocks.push( ...contentBlocks );
+        }
+        
+        return blocks.join( "\n\n" );
+    }
+
+    /// HTML 컨텐츠를 개별 요소로 분할하고 각각을 워드프레스 블록으로 변환합니다.
+    private splitContentIntoBlocks( html : string ) : string[]
+    {
+        const blocks : string[] = [];
+
+        // 모든 매치를 인덱스와 함께 수집
+        interface Match
+        {
+            type        : string;
+            content     : string;
+            attributes? : string;
+            index       : number;
+            length      : number;
+            original    : string;
+        }
+
+
+        const allMatches : Match[] = [];
+
+        // 제목 태그 처리
+        this.collectMatches( html, /<h([1-6])>([\s\S]*?)<\/h\1>/g, ( match ) =>
+        {
+            const level     = match[ 1 ];
+            const content   = match[ 2 ];
+            const levelAttr = level !== "2" ? ` {"level":${ level }}` : "";
+
+            allMatches.push
+            ( {
+                type       : "heading", 
+                content    : `<h${ level }>${ content }</h${ level }>`, 
+                attributes : levelAttr, 
+                index      : match.index, 
+                length     : match[ 0 ].length, 
+                original   : match[ 0 ]
+            } );
+        } );
+
+        // 단락 태그 처리
+        this.collectMatches( html, /<p>([\s\S]*?)<\/p>/g, ( match ) =>
+        {
+            allMatches.push
+            ( {
+                type     : "paragraph", 
+                content  : `<p>${ match[ 1 ] }</p>`, 
+                index    : match.index, 
+                length   : match[ 0 ].length, 
+                original : match[ 0 ]
+            } );
+        } );
+
+        // 목록 태그 처리
+        this.collectMatches( html, /<ul>([\s\S]*?)<\/ul>/g, ( match ) =>
+        {
+            allMatches.push
+            ( {
+                type     : "list", 
+                content  : `<ul>${ match[ 1 ] }</ul>`, 
+                index    : match.index, 
+                length   : match[ 0 ].length, 
+                original : match[ 0 ]
+            } );
+        } );
+
+        // 순서 있는 목록 태그 처리
+        this.collectMatches( html, /<ol>([\s\S]*?)<\/ol>/g, ( match ) =>
+        {
+            allMatches.push
+            ( {
+                type       : "list", 
+                content    : `<ol>${ match[ 1 ] }</ol>`, 
+                attributes : " {\"ordered\":true}", 
+                index      : match.index, 
+                length     : match[ 0 ].length, 
+                original   : match[ 0 ]
+            } );
+        } );
+
+        // 코드 블록 태그 처리
+        this.collectMatches( html, /<pre>([\s\S]*?)<\/pre>/g, ( match ) =>
+        {
+            allMatches.push
+            ( {
+                type     : "code", 
+                content  : `<pre class="wp-block-code"><code>${ match[ 1 ] }</code></pre>`, 
+                index    : match.index, 
+                length   : match[ 0 ].length, 
+                original : match[ 0 ]
+            } );
+        } );
+
+        // 인용구 태그 처리
+        this.collectMatches( html, /<blockquote>([\s\S]*?)<\/blockquote>/g, ( match ) =>
+        {
+            allMatches.push
+            ( {
+                type     : "quote", 
+                content  : `<blockquote class="wp-block-quote">${ match[ 1 ] }</blockquote>`, 
+                index    : match.index, 
+                length   : match[ 0 ].length, 
+                original : match[ 0 ]
+            } );
+        } );
+
+        // 매치가 있으면 인덱스 순으로 정렬하여 원래 순서 유지
+        if ( allMatches.length > 0 )
+        {
+            // 인덱스 기준으로 정렬
+            allMatches.sort( ( a, b ) => a.index - b.index );
+
+            // 처리되지 않은 구간 추적
+            let lastIndex = 0;
+            let processedHtml = html;
+            
+            // 각 매치를 순서대로 처리
+            for ( const match of allMatches )
+            {
+                // 매치 이전의 텍스트가 있으면 처리
+                if ( match.index > lastIndex )
+                {
+                    const beforeText = html.substring( lastIndex, match.index ).trim();
+
+                    if ( beforeText )
+                    {
+                        // HTML 태그를 제거하고 텍스트만 추출
+                        const textContent = beforeText.replace( /<[^>]*>/g, "" ).trim();
+
+                        if ( textContent )
+                        {
+                            blocks.push( this.createParagraphBlock( textContent ) );
+                        }
+                    }
+                }
+                
+                // 매치된 블록 추가
+                blocks.push( this.createWpBlock( match.type, match.content, match.attributes ) );
+                lastIndex = match.index + match.length;
+            }
+
+            // 마지막 매치 이후의 텍스트가 있으면 처리
+            if ( lastIndex < html.length )
+            {
+                const afterText = html.substring( lastIndex ).trim();
+                
+                if ( afterText )
+                {
+                    // HTML 태그를 제거하고 텍스트만 추출
+                    const textContent = afterText.replace( /<[^>]*>/g, "" ).trim();
+                    
+                    if ( textContent )
+                    {
+                        blocks.push( this.createParagraphBlock( textContent ) );
+                    }
+                }
+            }
+        }
+        else
+        {
+            // 매치가 없으면 전체를 단락으로 처리
+            // HTML 태그를 제거하고 텍스트만 추출
+            const textContent = html.replace( /<[^>]*>/g, "" ).trim();
+            
+            if ( textContent )
+            {
+                blocks.push( this.createParagraphBlock( textContent ) );
+            }
+        }
+
+        return blocks;
+    }
+
+    /// 지정된 정규식 패턴과 일치하는 모든 매치를 수집합니다.
+    private collectMatches( html : string, regex : RegExp, callback : ( match : RegExpExecArray ) => void ) : void
+    {
+        let match;
+        regex.lastIndex = 0; // 정규식 인덱스 초기화
+
+        while ( ( match = regex.exec( html ) ) !== null )
+        {
+            callback( match );
+        }
+    }
+
+    /**
+     * 워드프레스 블록을 생성합니다.
+     */
+    private createWpBlock( blockType : string, content : string, attributes : string = "" ) : string
+    {
+        return `<!-- wp:${ blockType }${ attributes } -->
+${ content }
+<!-- /wp:${ blockType } -->`;
+    }
+
+    /**
+     * 텍스트로부터 단락 블록을 생성합니다.
+     */
+    private createParagraphBlock( text : string ) : string
+    {
+        return `<!-- wp:paragraph -->
+<p>${ text }</p>
+<!-- /wp:paragraph -->`;
+    }
 }
 
 
 interface Image
 {
-    original : string;
-    src : string;
-    altText? : string;
-    width? : string;
-    height? : string;
-    srcIsUrl : boolean;
+    original   : string;
+    src        : string;
+    altText?   : string;
+    width?     : string;
+    height?    : string;
+    srcIsUrl   : boolean;
     startIndex : number;
-    endIndex : number;
-    file? : TFile;
-    content? : ArrayBuffer;
+    endIndex   : number;
+    file?      : TFile;
+    content?   : ArrayBuffer;
 }
 
 
@@ -436,21 +709,38 @@ function getImages( content : string ) : Image[]
     // for ![Alt Text](image-url)
     let regex = /(!\[(.*?)(?:\|(\d+)(?:x(\d+))?)?]\((.*?)\))/g;
     let match;
+    
     while ( ( match = regex.exec( content ) ) !== null )
     {
-        paths.push( {
-            src : match[ 5 ], altText : match[ 2 ], width : match[ 3 ], height : match[ 4 ], original : match[ 1 ], startIndex : match.index, endIndex : match.index + match.length, srcIsUrl : isValidUrl( match[ 5 ] )
+        paths.push
+        ( {
+            src        : match[ 5 ], 
+            altText    : match[ 2 ], 
+            width      : match[ 3 ], 
+            height     : match[ 4 ], 
+            original   : match[ 1 ], 
+            startIndex : match.index, 
+            endIndex   : match.index + match.length, 
+            srcIsUrl   : isValidUrl( match[ 5 ] )
         } );
     }
 
     // for ![[image-name|옵션...]]
     regex = /(!\[\[([^\]]+)\]\])/g;
+    
     while ( ( match = regex.exec( content ) ) !== null )
     {
         const srcRaw = match[ 2 ];
         const src = srcRaw.split( '|' )[ 0 ];
-        paths.push( {
-            src : src, original : match[ 1 ], width : undefined, height : undefined, startIndex : match.index, endIndex : match.index + match.length, srcIsUrl : isValidUrl( src )
+        paths.push
+        ( {
+            src        : src, 
+            original   : match[ 1 ], 
+            width      : undefined, 
+            height     : undefined, 
+            startIndex : match.index, 
+            endIndex   : match.index + match.length, 
+            srcIsUrl   : isValidUrl( src )
         } );
     }
 
