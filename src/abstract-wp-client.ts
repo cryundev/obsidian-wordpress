@@ -585,6 +585,20 @@ export abstract class AbstractWordPressClient implements WordPressClient
                 original : match[ 0 ]
             } );
         } );
+        
+        // <br /> 태그 처리 - 워드프레스 스페이서 블록으로 변환
+        this.collectMatches( html, /<br\s*\/?>/g, ( match ) =>
+        {
+            allMatches.push
+            ( {
+                type       : "spacer", 
+                content    : `<div style="height:50px" aria-hidden="true" class="wp-block-spacer"></div>`, 
+                attributes : " {\"height\":\"50px\"}", 
+                index      : match.index, 
+                length     : match[ 0 ].length, 
+                original   : match[ 0 ]
+            } );
+        } );
 
         // 매치가 있으면 인덱스 순으로 정렬하여 원래 순서 유지
         if ( allMatches.length > 0 )
