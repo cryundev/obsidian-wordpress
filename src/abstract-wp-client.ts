@@ -488,252 +488,229 @@ export abstract class AbstractWordPressClient implements WordPressClient
     {
         const blocks : string[] = [];
 
-        // 모든 매치를 인덱스와 함께 수집
-        type HtmlMatch = {
-            type        : string;
-            content     : string;
-            attributes? : string;
-            index       : number;
-            length      : number;
-            original    : string;
-        };
+        // HTML을 주요 블록 단위로 분할 (줄바꿈 기준)
+        const htmlLines = html.split( "\n" ).filter( line => line.trim() !== "" );
 
-        const allMatches : HtmlMatch[] = [];
-        
-        // 이미 처리된 범위를 추적하기 위한 배열 (중복 처리 방지)
-        const processedRanges : {start: number, end: number}[] = [];
-        
-        // 범위가 이미 처리되었는지 확인하는 함수
-        const isRangeProcessed = (start: number, end: number) => 
+        let i = 0;
+        while ( i < htmlLines.length )
         {
-            return processedRanges.some
-            (
-                range => 
-                ( start >= range.start && start <  range.end ) || 
-                ( end   >  range.start && end   <= range.end ) ||
-                ( start <= range.start && end   >= range.end )
-            );
-        };
-        
-        // 처리된 범위 추가 함수
-        const addProcessedRange = (start: number, end: number) => {
-            processedRanges.push({start, end});
-        };
+            const line = htmlLines[ i ].trim();
 
-        // 제목 태그 처리
-        this.collectMatches( html, /<h([1-6])>([\s\S]*?)<\/h\1>/g, ( match ) =>
-        {
-            const level     = match[ 1 ];
-            const content   = match[ 2 ];
-            const levelAttr = level !== "2" ? ` {"level":${ level }}` : "";
-
-            allMatches.push
-            ( {
-                type       : "heading", 
-                content    : `<h${ level }>${ content }</h${ level }>`, 
-                attributes : levelAttr, 
-                index      : match.index, 
-                length     : match[ 0 ].length, 
-                original   : match[ 0 ]
-            } );
-        } );
-
-        // 인용구 태그 처리
-        this.collectMatches( html, /<blockquote>([\s\S]*?)<\/blockquote>/g, ( match ) =>
-        {
-            // 이미 처리된 범위인지 확인
-            if ( isRangeProcessed( match.index, match.index + match[ 0 ].length ) )
+            if ( !line )
             {
-                return;
+                i++;
+                continue;
             }
-            
-            // 콜아웃 문법이 포함된 경우 Alerts 블록으로 변환
-            if ( this.hasCalloutSyntax( match[ 1 ] ) )
+
+            // 제목 태그 처리
+            const headingMatch = line.match( /^<h([1-6])>(.*?)<\/h\1>$/ );
+            if ( headingMatch )
             {
-                this.processCalloutContent( match[ 0 ], match[ 1 ], match.index, allMatches );
-                // 처리된 범위 추가
-                addProcessedRange(match.index, match.index + match[0].length);
+                const level     = headingMatch[ 1 ];
+                const content   = headingMatch[ 2 ];
+                const levelAttr = level !== "2" ? ` {"level":${ level }}` : "";
+                blocks.push( this.createWpBlock( "heading", `<h${ level }>${ content }</h${ level }>`, levelAttr ) );
+                i++;
+                continue;
             }
-            else
+
+            // 수평선 처리
+            if ( line.match( /^<hr\s*\/?>$/ ) )
             {
-                // 일반 인용구 처리
-                allMatches.push
-                ( {
-                    type     : "quote", 
-                    content  : `<blockquote class="wp-block-quote">${ match[ 1 ] }</blockquote>`, 
-                    index    : match.index, 
-                    length   : match[ 0 ].length, 
-                    original : match[ 0 ]
-                } );
-                // 처리된 범위 추가
-                addProcessedRange(match.index, match.index + match[0].length);
+                const content = `<hr class="wp-block-separator has-text-color has-alpha-channel-opacity has-background is-style-wide" style="margin-top:var(--wp--preset--spacing--50);margin-bottom:var(--wp--preset--spacing--50);background-color:#ececec;color:#ececec"/>`;
+                const attributes = ` {"className":"is-style-wide","style":{"spacing":{"margin":{"top":"var:preset|spacing|50","bottom":"var:preset|spacing|50"}},"color":{"background":"#ececec"}}}`;
+                blocks.push( this.createWpBlock( "separator", content, attributes ) );
+                i++;
+                continue;
             }
-        } );
-        
-        // 단락 태그 처리
-        this.collectMatches( html, /<p>([\s\S]*?)<\/p>/g, ( match ) =>
-        {
-            // 이미 처리된 범위인지 확인
-            if ( isRangeProcessed( match.index, match.index + match[ 0 ].length ) )
+
+            // 코드 블록 처리 (시작)
+            if ( line.match( /^<pre>/ ) )
             {
-                return;
-            }
-            
-            // 콜아웃 문법이 포함된 경우 Alerts 블록으로 변환
-            if ( this.hasCalloutSyntax( match[ 1 ] ) )
-            {
-                this.processCalloutContent( match[ 0 ], match[ 1 ], match.index, allMatches );
-                // 처리된 범위 추가
-                addProcessedRange(match.index, match.index + match[0].length);
-            }
-            else
-            {
-                allMatches.push
-                ( {
-                    type     : "paragraph", 
-                    content  : `<p>${ match[ 1 ] }</p>`, 
-                    index    : match.index, 
-                    length   : match[ 0 ].length, 
-                    original : match[ 0 ]
-                } );
-                // 처리된 범위 추가
-                addProcessedRange(match.index, match.index + match[0].length);
-            }
-        } );
+                let codeContent = "";
+                let j = i;
 
-        // 목록 태그 처리
-        this.collectMatches( html, /<ul>([\s\S]*?)<\/ul>/g, ( match ) =>
-        {
-            allMatches.push
-            ( {
-                type     : "list", 
-                content  : `<ul>${ match[ 1 ] }</ul>`, 
-                index    : match.index, 
-                length   : match[ 0 ].length, 
-                original : match[ 0 ]
-            } );
-        } );
-
-        // 순서 있는 목록 태그 처리
-        this.collectMatches( html, /<ol>([\s\S]*?)<\/ol>/g, ( match ) =>
-        {
-            allMatches.push
-            ( {
-                type       : "list", 
-                content    : `<ol>${ match[ 1 ] }</ol>`, 
-                attributes : " {\"ordered\":true}", 
-                index      : match.index, 
-                length     : match[ 0 ].length, 
-                original   : match[ 0 ]
-            } );
-        } );
-
-        // 코드 블록 태그 처리
-        this.collectMatches( html, /<pre>([\s\S]*?)<\/pre>/g, ( match ) =>
-        {
-            allMatches.push
-            ( {
-                type     : "code", 
-                content  : `<pre class="wp-block-code"><code>${ match[ 1 ] }</code></pre>`, 
-                index    : match.index, 
-                length   : match[ 0 ].length, 
-                original : match[ 0 ]
-            } );
-        } );
-
-        // <br /> 태그 처리 - 워드프레스 스페이서 블록으로 변환
-        this.collectMatches( html, /<br\s*\/?>/g, ( match ) =>
-        {
-            allMatches.push
-            ( {
-                type       : "spacer", 
-                content    : `<div style="height:50px" aria-hidden="true" class="wp-block-spacer"></div>`, 
-                attributes : " {\"height\":\"50px\"}", 
-                index      : match.index, 
-                length     : match[ 0 ].length, 
-                original   : match[ 0 ]
-            } );
-        } );
-
-        // 매치가 있으면 인덱스 순으로 정렬하여 원래 순서 유지
-        if ( allMatches.length > 0 )
-        {
-            // 인덱스 기준으로 정렬
-            allMatches.sort( ( a, b ) => a.index - b.index );
-
-            // 처리되지 않은 구간 추적
-            let lastIndex = 0;
-            let processedHtml = html;
-            
-            // 각 매치를 순서대로 처리
-            for ( const match of allMatches )
-            {
-                // 매치 이전의 텍스트가 있으면 처리
-                if ( match.index > lastIndex )
+                // 코드 블록 전체 수집
+                while ( j < htmlLines.length )
                 {
-                    const beforeText = html.substring( lastIndex, match.index ).trim();
-
-                    if ( beforeText )
+                    const codeLine = htmlLines[ j ];
+                    codeContent += codeLine;
+                    if ( codeLine.includes( "</pre>" ) )
                     {
-                        // HTML 태그를 제거하고 텍스트만 추출
-                        const textContent = beforeText.replace( /<[^>]*>/g, "" ).trim();
+                        break;
+                    }
+                    if ( j > i )
+                    {
+                        codeContent += "\n";
+                    }
+                    j++;
+                }
 
-                        if ( textContent )
-                        {
-                            blocks.push( this.createParagraphBlock( textContent ) );
-                        }
+                // <pre>, </pre>, <code>, </code> 태그 제거
+                codeContent = codeContent
+                .replace( /<\/?pre>/g, "" )
+                .replace( /<\/?code[^>]*>/g, "" );
+
+                blocks.push( this.createWpBlock( "code", `<pre class="wp-block-code"><code>${ codeContent }</code></pre>` ) );
+                i = j + 1;
+                continue;
+            }
+
+            // 목록 처리 (ul)
+            if ( line.match( /^<ul>/ ) )
+            {
+                let listContent = "";
+                let j = i;
+
+                while ( j < htmlLines.length )
+                {
+                    const listLine = htmlLines[ j ];
+                    listContent += listLine;
+                    if ( listLine.includes( "</ul>" ) )
+                    {
+                        break;
+                    }
+                    if ( j > i )
+                    {
+                        listContent += "\n";
+                    }
+                    j++;
+                }
+
+                blocks.push( this.createWpBlock( "list", listContent ) );
+                i = j + 1;
+                continue;
+            }
+
+            // 목록 처리 (ol)
+            if ( line.match( /^<ol>/ ) )
+            {
+                let listContent = "";
+                let j = i;
+
+                while ( j < htmlLines.length )
+                {
+                    const listLine = htmlLines[ j ];
+                    listContent += listLine;
+                    if ( listLine.includes( "</ol>" ) )
+                    {
+                        break;
+                    }
+                    if ( j > i )
+                    {
+                        listContent += "\n";
+                    }
+                    j++;
+                }
+
+                blocks.push( this.createWpBlock( "list", listContent, " {\"ordered\":true}" ) );
+                i = j + 1;
+                continue;
+            }
+
+            // 인용구 처리
+            if ( line.match( /^<blockquote>/ ) )
+            {
+                let quoteContent = "";
+                let j = i;
+
+                while ( j < htmlLines.length )
+                {
+                    const quoteLine = htmlLines[ j ];
+                    quoteContent += quoteLine;
+                    if ( quoteLine.includes( "</blockquote>" ) )
+                    {
+                        break;
+                    }
+                    if ( j > i )
+                    {
+                        quoteContent += "\n";
+                    }
+                    j++;
+                }
+
+                // blockquote 태그 제거하고 내용만 추출
+                const innerContent = quoteContent.replace( /<\/?blockquote>/g, "" ).trim();
+
+                // 콜아웃 문법 확인
+                if ( this.hasCalloutSyntax( innerContent ) )
+                {
+                    this.processCalloutContentSimple( innerContent, blocks );
+                }
+                else
+                {
+                    blocks.push( this.createWpBlock( "quote", `<blockquote class="wp-block-quote">${ innerContent }</blockquote>` ) );
+                }
+
+                i = j + 1;
+                continue;
+            }
+
+            // 단락 처리
+            const paragraphMatch = line.match( /^<p>(.*?)<\/p>$/ );
+            if ( paragraphMatch )
+            {
+                const content = paragraphMatch[ 1 ];
+
+                // 이미지만 포함된 단락인지 확인
+                const imgMatch = content.match( /^\s*<img\s+([^>]*?)>\s*$/ );
+                if ( imgMatch )
+                {
+                    const imgAttributes = imgMatch[ 1 ];
+                    const srcMatch = imgAttributes.match( /src="([^"]*)"/ );
+                    const altMatch = imgAttributes.match( /alt="([^"]*)"/ );
+
+                    if ( srcMatch )
+                    {
+                        const imgSrc = srcMatch[ 1 ];
+                        const imgAlt = altMatch ? altMatch[ 1 ] : "";
+                        const tempId = Math.floor( Math.random() * 1000 ) + 600;
+
+                        const imageContent = `<figure class="wp-block-image aligncenter size-large"><img src="${ imgSrc }" alt="${ imgAlt }" class="wp-image-${ tempId }"/></figure>`;
+                        const imageAttributes = ` {"id":${ tempId },"sizeSlug":"large","linkDestination":"none","align":"center"}`;
+                        blocks.push( this.createWpBlock( "image", imageContent, imageAttributes ) );
+                        i++;
+                        continue;
                     }
                 }
-                
-                // 매치된 블록 추가
-                blocks.push( this.createWpBlock( match.type, match.content, match.attributes ) );
-                lastIndex = match.index + match.length;
+
+                // 콜아웃 문법 확인
+                if ( this.hasCalloutSyntax( content ) )
+                {
+                    this.processCalloutContentSimple( content, blocks );
+                }
+                else
+                {
+                    blocks.push( this.createWpBlock( "paragraph", `<p>${ content }</p>` ) );
+                }
+
+                i++;
+                continue;
             }
 
-            // 마지막 매치 이후의 텍스트가 있으면 처리
-            if ( lastIndex < html.length )
+            // <br> 태그 처리
+            if ( line.match( /^<br\s*\/?>$/ ) )
             {
-                const afterText = html.substring( lastIndex ).trim();
-                
-                if ( afterText )
-                {
-                    // HTML 태그를 제거하고 텍스트만 추출
-                    const textContent = afterText.replace( /<[^>]*>/g, "" ).trim();
-                    
-                    if ( textContent )
-                    {
-                        blocks.push( this.createParagraphBlock( textContent ) );
-                    }
-                }
+                const content = `<div style="height:50px" aria-hidden="true" class="wp-block-spacer"></div>`;
+                blocks.push( this.createWpBlock( "spacer", content, " {\"height\":\"50px\"}" ) );
+                i++;
+                continue;
             }
-        }
-        else
-        {
-            // 매치가 없으면 전체를 단락으로 처리
-            // HTML 태그를 제거하고 텍스트만 추출
-            const textContent = html.replace( /<[^>]*>/g, "" ).trim();
-            
+
+            // 기타 텍스트 처리 (HTML 태그 제거)
+            const textContent = line.replace( /<[^>]*>/g, "" )
+            .trim();
             if ( textContent )
             {
                 blocks.push( this.createParagraphBlock( textContent ) );
             }
+
+            i++;
         }
 
         return blocks;
     }
-
-    /// 지정된 정규식 패턴과 일치하는 모든 매치를 수집합니다.
-    private collectMatches( html : string, regex : RegExp, callback : ( match : RegExpExecArray ) => void ) : void
-    {
-        let match;
-        regex.lastIndex = 0; // 정규식 인덱스 초기화
-
-        while ( ( match = regex.exec( html ) ) !== null )
-        {
-            callback( match );
-        }
-    }
-
+    
     /**
      * 워드프레스 블록을 생성합니다.
      */
@@ -765,30 +742,21 @@ ${ content }
     /**
      * 콜아웃 내용을 워드프레스 Alerts 블록으로 변환합니다.
      */
-    private processCalloutContent( original : string, content : string, index : number, allMatches : any[] ) : void
+    private processCalloutContentSimple( content : string, blocks : string[] ) : void
     {
-        // 콜아웃 유형과 제목 추출
         const calloutMatch = content.match( /\[!(info|warning|note|tip|caution|danger|success|failure|bug|example|quote|cite|abstract|summary|tldr|info\+|question|help|faq|error)\]\s*([^\n]*)/i );
-        
+
         if ( calloutMatch )
         {
-            // 콜아웃 유형
             const calloutType = calloutMatch[ 1 ].toLowerCase();
-            
-            // 제목은 콜아웃 태그 이후의 텍스트, 없으면 유형의 첫 글자를 대문자로 사용
-            const calloutTitle = calloutMatch[ 2 ] ? calloutMatch[ 2 ].trim() : calloutType.charAt( 0 ).toUpperCase() + calloutType.slice( 1 );
-            
-            // 내용은 콜아웃 태그와 제목을 제외한 나머지 부분
+            const calloutTitle = calloutMatch[ 2 ] ? calloutMatch[ 2 ].trim() : calloutType.charAt( 0 )
+            .toUpperCase() + calloutType.slice( 1 );
+
             let calloutContent = content
-                .replace( /\[!(info|warning|note|tip|caution|danger|success|failure|bug|example|quote|cite|abstract|summary|tldr|info\+|question|help|faq|error)\]\s*[^\n]*/i, "" )
-                .trim();
-            
-            // <p>, </p> 태그 제거
-            calloutContent = calloutContent.replace(/<\/?p>/g, "").trim();
-            
-            // 고유 ID 생성
-            const uniqueId = "alerts-dlx-" + Math.random().toString( 36 ).substring( 2, 10 );
-            
+            .replace( /\[!(info|warning|note|tip|caution|danger|success|failure|bug|example|quote|cite|abstract|summary|tldr|info\+|question|help|faq|error)\]\s*[^\n]*/i, "" )
+            .replace( /<\/?p>/g, "" )
+            .trim();
+
             // 워드프레스 Alerts 유형 매핑
             let alertType = "info";
             if ( calloutType === "warning" || calloutType === "caution" || calloutType === "danger" )
@@ -803,19 +771,15 @@ ${ content }
             {
                 alertType = "error";
             }
-            
-            // 매치 추가
-            allMatches.push
-            ( {
-                type       : "mediaron/alerts-dlx-chakra", 
-                content    : `<!-- wp:paragraph {"placeholder":""} -->
-"${calloutContent}"
-<!-- /wp:paragraph -->`,  
-                attributes : ` {"alertType":"${ alertType }","alertTitle":"${ calloutTitle }","maximumWidthUnit":"%","maximumWidth":"100","baseFontSize":13,"variant":"left-accent","uniqueId":"alerts-dlx-a5a9b48a","className":"is-style-${alertType}"}`,
-                index      : index, 
-                length     : original.length, 
-                original   : original
-            } );
+
+            const alertContent = `<!-- wp:paragraph {"placeholder":""} -->
+  "${ calloutContent }"
+  <!-- /wp:paragraph -->`;
+            const alertAttributes = ` {"alertType":"${ alertType }","alertTitle":"${ calloutTitle }","maximumWidthUnit":"%","maximumWidth":"100","baseFontSize":13,"variant":"left-accent","uniqueId":"alerts-dlx-${ Math.random()
+            .toString( 36 )
+            .substring( 2, 10 ) }","className":"is-style-${ alertType }"}`;
+
+            blocks.push( this.createWpBlock( "mediaron/alerts-dlx-chakra", alertContent, alertAttributes ) );
         }
     }
 }
