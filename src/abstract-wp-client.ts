@@ -120,11 +120,16 @@ export abstract class AbstractWordPressClient implements WordPressClient
     ) : Promise<WordPressClientResult<WordPressPublishResult>>
     {
         const { postParams, auth, updateMatterData } = params;
+        
         const tagTerms = await this.getTags( postParams.tags, auth );
         postParams.tags = tagTerms.map( term => term.id );
-        await this.updatePostImages( {
+        
+        await this.updatePostImages
+        ( {
             auth, postParams
         } );
+        
+        await this.convertExcalidrawToImage( postParams.content );
         
         // 처리된 마크다운을 HTML로 변환
         const html = AppState.markdownParser.render( postParams.content );
@@ -148,24 +153,24 @@ export abstract class AbstractWordPressClient implements WordPressClient
             {
                 // const modified = matter.stringify(postParams.content, matterData, matterOptions);
                 // this.updateFrontMatter(modified);
-                const file = this.plugin.app.workspace.getActiveFile();
-                if ( file )
-                {
-                    await this.plugin.app.fileManager.processFrontMatter( file, fm =>
-                    {
-                        fm.profileName = this.profile.name;
-                        fm.postId = postId;
-                        fm.postType = postParams.postType;
-                        if ( postParams.postType === PostTypeConst.Post )
-                        {
-                            fm.categories = postParams.categories;
-                        }
-                        if ( isFunction( updateMatterData ) )
-                        {
-                            updateMatterData( fm );
-                        }
-                    } );
-                }
+                // const file = this.plugin.app.workspace.getActiveFile();
+                // if ( file )
+                // {
+                //     await this.plugin.app.fileManager.processFrontMatter( file, fm =>
+                //     {
+                //         fm.profileName = this.profile.name;
+                //         fm.postId = postId;
+                //         fm.postType = postParams.postType;
+                //         if ( postParams.postType === PostTypeConst.Post )
+                //         {
+                //             fm.categories = postParams.categories;
+                //         }
+                //         if ( isFunction( updateMatterData ) )
+                //         {
+                //             updateMatterData( fm );
+                //         }
+                //     } );
+                // }
 
                 if ( this.plugin.settings.rememberLastSelectedCategories )
                 {
@@ -186,6 +191,51 @@ export abstract class AbstractWordPressClient implements WordPressClient
             }
         }
         return result;
+    }
+    
+    private async convertExcalidrawToImage( content : string ) : Promise<string>
+    {
+        let processedContent = content;
+        
+        const linkRegex = /!\[\[([^|\]\n]+)((\|[^|\]\n]+)*)?\]\]/g;
+        const matches = [ ...content.matchAll( linkRegex ) ];
+        
+        for ( const match of matches )
+        {
+            const fullMatch = match[ 0 ];
+            const fileName  = match[ 1 ].trim();
+            const options   = match[ 2 ] || '';
+            
+            // Excalidraw 파일인지 확인 (.excalidraw 확장자 또는 .excalidraw.md)
+            if ( fileName.endsWith( '.excalidraw' ) )
+            {
+                try 
+                {
+                    // Excalidraw 파일을 이미지로 변환
+                    const exportImageFile = await this.exportExcalidrawToImage( fileName );
+                    
+                    if ( exportImageFile )
+                    {
+                        // 원본 ![[filename]] 태그를 이미지 태그로 교체
+                        const imageTag = `![[${exportImageFile}|${options}]]`;
+                        processedContent = processedContent.replace( fullMatch, imageTag );
+                    }
+                }
+                catch ( error )
+                {
+                    console.error( `Error converting Excalidraw file ${fileName}:`, error );
+                }
+            }
+        }
+
+        return processedContent;
+    }
+    
+        private async exportExcalidrawToImage( fileName : string ) : Promise<string | null>
+    {
+        let imageFileName : string | null = null;
+        
+        return imageFileName;
     }
 
     private async updatePostImages( params : {
@@ -210,19 +260,24 @@ export abstract class AbstractWordPressClient implements WordPressClient
                 {
                     img.src = img.src.split( '|' )[ 0 ];
                     img.src = decodeURI( img.src );
+                    
                     const fileName = img.src.split( "/" ).pop();
                     if ( fileName === undefined )
                     {
                         continue;
                     }
-                    const imgFile    = this.plugin.app.metadataCache.getFirstLinkpathDest( img.src, fileName );
+                    
+                    const imgFile = this.plugin.app.metadataCache.getFirstLinkpathDest( img.src, fileName );
                     if ( imgFile instanceof TFile )
                     {
-                        const content = await this.plugin.app.vault.readBinary( imgFile );
+                        const content  = await this.plugin.app.vault.readBinary( imgFile );
                         const fileType = fileTypeChecker.detectFile( content );
-                        const result = await this.uploadMedia( {
+                        
+                        const result = await this.uploadMedia
+                        ( {
                             mimeType : fileType?.mimeType ?? "application/octet-stream", fileName : imgFile.name, content : content
                         }, auth );
+                        
                         if ( result.code === WordPressClientReturnCode.OK )
                         {
                             if ( img.width && img.height )
@@ -489,18 +544,12 @@ export abstract class AbstractWordPressClient implements WordPressClient
         const blocks : string[] = [];
 
         // HTML을 주요 블록 단위로 분할 (줄바꿈 기준)
-        const htmlLines = html.split( "\n" ).filter( line => line.trim() !== "" );
+        const htmlLines = html.split( "\n" );
 
         let i = 0;
         while ( i < htmlLines.length )
         {
-            const line = htmlLines[ i ].trim();
-
-            if ( !line )
-            {
-                i++;
-                continue;
-            }
+            const line = htmlLines[ i ];
 
             // 제목 태그 처리
             const headingMatch = line.match( /^<h([1-6])>(.*?)<\/h\1>$/ );
@@ -524,36 +573,34 @@ export abstract class AbstractWordPressClient implements WordPressClient
                 continue;
             }
 
-                // 코드 블록 처리 (시작)
-                if ( line.match( /^<pre>/ ) )
+            // 코드 블록 처리 (시작)
+            if ( line.match( /^<pre>/ ) )
+            {
+                let codeLines = [];
+                let j = i;
+            
+                // 코드 블록 전체 수집
+                while ( j < htmlLines.length )
                 {
-                    // 현재 라인의 원본 HTML에서의 시작 위치 찾기
-                const currentLineContent = htmlLines[ i ];
-                const preStartIndex = html.indexOf( currentLineContent );
-                const preEndIndex = html.indexOf( '</pre>', preStartIndex ) + 6; // '</pre>' 길이 포함
-                
-                if ( preEndIndex > preStartIndex )
-                {
-                    // 원본 HTML에서 코드 블록 전체 추출
-                    const fullCodeBlock = html.substring( preStartIndex, preEndIndex );
-                    
-                    // <pre>와 </pre> 사이의 내용만 추출하되, 원본 형태 유지
-                    const codeMatch = fullCodeBlock.match( /<pre>([\s\S]*?)<\/pre>/ );
-                    if ( codeMatch )
+                    const codeLine = htmlLines[ j ];
+                    if ( codeLine.includes( "</pre>" ) )
                     {
-                        let codeContent = codeMatch[ 1 ];
-                        
-                        // <code> 태그만 제거하고 내용은 그대로 유지
-                        codeContent = codeContent.replace( /<\/?code[^>]*>/g, '' );
-                        
-                        blocks.push( this.createWpBlock( "code", `<pre class="wp-block-code"><code>${ codeContent }</code></pre>` ) );
+                        break;
                     }
                     
-                    // 처리된 코드 블록의 라인 수만큼 인덱스 이동
-                    const codeLines = fullCodeBlock.split( '\n' );
-                    i += codeLines.length;
-                    continue;
+                    codeLines.push( codeLine );
+                    j++;
                 }
+            
+                // 배열을 조인하여 개행 처리
+                let codeContent = codeLines.join( "\n" );
+            
+                // <pre>, </pre>, <code>, </code> 태그 제거
+                codeContent = codeContent.replace( /<\/?(?:pre|code)[^>]*>/g, "" );
+            
+                blocks.push( this.createWpBlock( "code", `<pre class="wp-block-code"><code>${ codeContent }</code></pre>` ) );
+                i = j + 1;
+                continue;
             }
 
             // 목록 처리 (ul)
@@ -698,8 +745,7 @@ export abstract class AbstractWordPressClient implements WordPressClient
             }
 
             // 기타 텍스트 처리 (HTML 태그 제거)
-            const textContent = line.replace( /<[^>]*>/g, "" )
-            .trim();
+            const textContent = line.replace( /<(?!\/?(code|strong|em|b|i)\b)[^>]*>/g, "" ).trim();
             if ( textContent )
             {
                 blocks.push( this.createParagraphBlock( textContent ) );
