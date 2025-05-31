@@ -524,36 +524,36 @@ export abstract class AbstractWordPressClient implements WordPressClient
                 continue;
             }
 
-            // 코드 블록 처리 (시작)
-            if ( line.match( /^<pre>/ ) )
-            {
-                let codeContent = "";
-                let j = i;
-
-                // 코드 블록 전체 수집
-                while ( j < htmlLines.length )
+                // 코드 블록 처리 (시작)
+                if ( line.match( /^<pre>/ ) )
                 {
-                    const codeLine = htmlLines[ j ];
-                    codeContent += codeLine;
-                    if ( codeLine.includes( "</pre>" ) )
+                    // 현재 라인의 원본 HTML에서의 시작 위치 찾기
+                const currentLineContent = htmlLines[ i ];
+                const preStartIndex = html.indexOf( currentLineContent );
+                const preEndIndex = html.indexOf( '</pre>', preStartIndex ) + 6; // '</pre>' 길이 포함
+                
+                if ( preEndIndex > preStartIndex )
+                {
+                    // 원본 HTML에서 코드 블록 전체 추출
+                    const fullCodeBlock = html.substring( preStartIndex, preEndIndex );
+                    
+                    // <pre>와 </pre> 사이의 내용만 추출하되, 원본 형태 유지
+                    const codeMatch = fullCodeBlock.match( /<pre>([\s\S]*?)<\/pre>/ );
+                    if ( codeMatch )
                     {
-                        break;
+                        let codeContent = codeMatch[ 1 ];
+                        
+                        // <code> 태그만 제거하고 내용은 그대로 유지
+                        codeContent = codeContent.replace( /<\/?code[^>]*>/g, '' );
+                        
+                        blocks.push( this.createWpBlock( "code", `<pre class="wp-block-code"><code>${ codeContent }</code></pre>` ) );
                     }
-                    if ( j > i )
-                    {
-                        codeContent += "\n";
-                    }
-                    j++;
+                    
+                    // 처리된 코드 블록의 라인 수만큼 인덱스 이동
+                    const codeLines = fullCodeBlock.split( '\n' );
+                    i += codeLines.length;
+                    continue;
                 }
-
-                // <pre>, </pre>, <code>, </code> 태그 제거
-                codeContent = codeContent
-                .replace( /<\/?pre>/g, "" )
-                .replace( /<\/?code[^>]*>/g, "" );
-
-                blocks.push( this.createWpBlock( "code", `<pre class="wp-block-code"><code>${ codeContent }</code></pre>` ) );
-                i = j + 1;
-                continue;
             }
 
             // 목록 처리 (ul)
