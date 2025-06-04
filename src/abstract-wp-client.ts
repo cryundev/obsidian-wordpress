@@ -14,7 +14,11 @@ import fileTypeChecker from "file-type-checker";
 import { MatterData, Media } from "./types";
 import { openPostPublishedModal } from "./post-published-modal";
 import { openLoginModal } from "./wp-login-modal";
-import { isFunction } from "lodash-es";
+import { exportToBlob } from "@excalidraw/excalidraw";
+import LZString from 'lz-string';
+
+export const DRAWING_COMPRESSED_REG = /(\n##? Drawing\n[^`]*(?:```compressed\-json\n))([\s\S]*?)(```\n)/gm;
+const DRAWING_COMPRESSED_REG_FALLBACK = /(\n##? Drawing\n(?:```compressed\-json\n)?)(.*)((```)?(%%)?)/gm;
 
 
 export abstract class AbstractWordPressClient implements WordPressClient
@@ -231,9 +235,71 @@ export abstract class AbstractWordPressClient implements WordPressClient
         return processedContent;
     }
     
-        private async exportExcalidrawToImage( fileName : string ) : Promise<string | null>
+    private async exportExcalidrawToImage( fileName : string ) : Promise<string | null>
     {
         let imageFileName : string | null = null;
+        
+        let file = this.plugin.app.metadataCache.getFirstLinkpathDest( fileName, fileName );
+        
+        if ( file instanceof TFile )
+        {
+            let excalidrawContent = await this.plugin.app.vault.cachedRead( file );
+            
+            let match = excalidrawContent.matchAll( DRAWING_COMPRESSED_REG );
+            let parts;
+    
+            parts = match.next();
+
+            if ( parts.done ) 
+            {
+                match = excalidrawContent.matchAll( DRAWING_COMPRESSED_REG_FALLBACK );
+                parts = match.next();
+            }
+
+            if ( parts.value && parts.value.length > 1 )
+            {
+                let decompressContent = parts.value[ 2 ];
+                
+                let cleanedData = "";
+                const length = decompressContent.length;
+
+                for ( let i = 0; i < length; i++ )
+                {
+                    const char = decompressContent[ i ];
+                    if ( char !== "\n" && char !== "\r" )
+                    {
+                        cleanedData += char;
+                    }
+                }
+            
+                let decompressedContent = LZString.decompressFromBase64( cleanedData );
+                let json = JSON.parse( decompressedContent );
+
+                let blob = exportToBlob
+                ( {
+                    elements : json['elements'],
+                    files    : {}
+                } );
+                
+                if ( blob )
+                {
+                    imageFileName = `excalidraw-${ Date.now() }.png`;
+
+                    blob.then( async( actualBlob ) =>
+                    {
+                        const arrayBuffer = await actualBlob.arrayBuffer();
+                        const activeFile = this.plugin.app.workspace.getActiveFile();
+                        const folderPath = activeFile?.parent?.path || "";
+                        const filePath = `${ folderPath }/${ fileName }`;
+                        await this.plugin.app.vault.createBinary( filePath, arrayBuffer );
+                    } )
+                    .catch( error =>
+                    {
+                        console.error( "Error saving PNG file:", error );
+                    } );
+                }
+            }
+        }
         
         return imageFileName;
     }
