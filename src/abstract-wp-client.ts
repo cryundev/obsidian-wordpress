@@ -29,6 +29,11 @@ export abstract class AbstractWordPressClient implements WordPressClient
      */
     name = "AbstractWordPressClient";
 
+    /**
+     * 임시로 생성된 Excalidraw 이미지 파일 경로 목록
+     */
+    private tempExcalidrawImages: string[] = [];
+
     protected constructor( protected readonly plugin : WordpressPlugin, protected readonly profile : WpProfile )
     {
     }
@@ -128,73 +133,79 @@ export abstract class AbstractWordPressClient implements WordPressClient
         const tagTerms = await this.getTags( postParams.tags, auth );
         postParams.tags = tagTerms.map( term => term.id );
         
+        postParams.content = await this.convertExcalidrawToImage( postParams.content );
+        
         await this.updatePostImages
         ( {
             auth, postParams
         } );
         
-        await this.convertExcalidrawToImage( postParams.content );
-        
-        // 처리된 마크다운을 HTML로 변환
         const html = AppState.markdownParser.render( postParams.content );
-        
-        // HTML을 워드프레스 블록으로 변환
+    
         const blockHtml = this.convertToWordPressBlocks( html );
         
-        const result = await this.publish( postParams.title ?? "A post from Obsidian!", blockHtml, postParams, auth );
-        if ( result.code === WordPressClientReturnCode.Error )
+        try
         {
-            throw new Error( this.plugin.i18n.t( "error_publishFailed", {
-                code : result.error.code as string, message : result.error.message
-            } ) );
-        }
-        else
-        {
-            new Notice( this.plugin.i18n.t( "message_publishSuccessfully" ) );
-            // post id will be returned if creating, true if editing
-            const postId = result.data.postId;
-            if ( postId )
+            const result = await this.publish( postParams.title ?? "A post from Obsidian!", blockHtml, postParams, auth );
+            if ( result.code === WordPressClientReturnCode.Error )
             {
-                // const modified = matter.stringify(postParams.content, matterData, matterOptions);
-                // this.updateFrontMatter(modified);
-                // const file = this.plugin.app.workspace.getActiveFile();
-                // if ( file )
-                // {
-                //     await this.plugin.app.fileManager.processFrontMatter( file, fm =>
-                //     {
-                //         fm.profileName = this.profile.name;
-                //         fm.postId = postId;
-                //         fm.postType = postParams.postType;
-                //         if ( postParams.postType === PostTypeConst.Post )
-                //         {
-                //             fm.categories = postParams.categories;
-                //         }
-                //         if ( isFunction( updateMatterData ) )
-                //         {
-                //             updateMatterData( fm );
-                //         }
-                //     } );
-                // }
-
-                if ( this.plugin.settings.rememberLastSelectedCategories )
+                throw new Error( this.plugin.i18n.t( "error_publishFailed", {
+                    code : result.error.code as string, message : result.error.message
+                } ) );
+            }
+            else
+            {
+                new Notice( this.plugin.i18n.t( "message_publishSuccessfully" ) );
+                // post id will be returned if creating, true if editing
+                const postId = result.data.postId;
+                if ( postId )
                 {
-                    this.profile.lastSelectedCategories = ( result.data as SafeAny ).categories;
-                    await this.plugin.saveSettings();
-                }
+                    // const modified = matter.stringify(postParams.content, matterData, matterOptions);
+                    // this.updateFrontMatter(modified);
+                    // const file = this.plugin.app.workspace.getActiveFile();
+                    // if ( file )
+                    // {
+                    //     await this.plugin.app.fileManager.processFrontMatter( file, fm =>
+                    //     {
+                    //         fm.profileName = this.profile.name;
+                    //         fm.postId = postId;
+                    //         fm.postType = postParams.postType;
+                    //         if ( postParams.postType === PostTypeConst.Post )
+                    //         {
+                    //             fm.categories = postParams.categories;
+                    //         }
+                    //         if ( isFunction( updateMatterData ) )
+                    //         {
+                    //             updateMatterData( fm );
+                    //         }
+                    //     } );
+                    // }
 
-                if ( this.plugin.settings.showWordPressEditConfirm )
-                {
-                    openPostPublishedModal( this.plugin )
-                    .then( () =>
+                    if ( this.plugin.settings.rememberLastSelectedCategories )
                     {
-                        openWithBrowser( `${ this.profile.endpoint }/wp-admin/post.php`, {
-                            action : "edit", post : postId
+                        this.profile.lastSelectedCategories = ( result.data as SafeAny ).categories;
+                        await this.plugin.saveSettings();
+                    }
+
+                    if ( this.plugin.settings.showWordPressEditConfirm )
+                    {
+                        openPostPublishedModal( this.plugin )
+                        .then( () =>
+                        {
+                            openWithBrowser( `${ this.profile.endpoint }/wp-admin/post.php`, {
+                                action : "edit", post : postId
+                            } );
                         } );
-                    } );
+                    }
                 }
             }
+            
+            return result;
         }
-        return result;
+        finally 
+        {
+            await this.cleanupTempExcalidrawImages();
+        }
     }
     
     private async convertExcalidrawToImage( content : string ) : Promise<string>
@@ -210,19 +221,31 @@ export abstract class AbstractWordPressClient implements WordPressClient
             const fileName  = match[ 1 ].trim();
             const options   = match[ 2 ] || '';
             
-            // Excalidraw 파일인지 확인 (.excalidraw 확장자 또는 .excalidraw.md)
             if ( fileName.endsWith( '.excalidraw' ) )
             {
                 try 
                 {
-                    // Excalidraw 파일을 이미지로 변환
+                    console.log(`Converting Excalidraw file: ${fileName}`);
+                    
                     const exportImageFile = await this.exportExcalidrawToImage( fileName );
                     
                     if ( exportImageFile )
                     {
-                        // 원본 ![[filename]] 태그를 이미지 태그로 교체
-                        const imageTag = `![[${exportImageFile}|${options}]]`;
-                        processedContent = processedContent.replace( fullMatch, imageTag );
+                        console.log(`Generated image file: ${exportImageFile}`);
+                        
+                        const activeFile = this.plugin.app.workspace.getActiveFile();
+                        const folderPath = activeFile?.parent?.path || "";
+                        const filePath = `${folderPath}/${exportImageFile}`;
+                        
+                        const fileExists = await this.plugin.app.vault.adapter.exists(filePath);
+                        console.log(`File exists check: ${fileExists} for path: ${filePath}`);
+                        
+                        const imageTag = `![[${exportImageFile}${options}]]`;
+                        const escapedMatch = this.escapeRegExp(fullMatch);
+                        
+                        processedContent = processedContent.replace(new RegExp(escapedMatch, 'g'), imageTag);
+                        
+                        console.log(`Replaced tag from ${fullMatch} to ${imageTag}`);
                     }
                 }
                 catch ( error )
@@ -244,64 +267,152 @@ export abstract class AbstractWordPressClient implements WordPressClient
         if ( file instanceof TFile )
         {
             let excalidrawContent = await this.plugin.app.vault.cachedRead( file );
+            let decompressedContent = this.decompressExcalidrawContent( excalidrawContent );
             
-            let match = excalidrawContent.matchAll( DRAWING_COMPRESSED_REG );
-            let parts;
-    
-            parts = match.next();
-
-            if ( parts.done ) 
-            {
-                match = excalidrawContent.matchAll( DRAWING_COMPRESSED_REG_FALLBACK );
-                parts = match.next();
-            }
-
-            if ( parts.value && parts.value.length > 1 )
-            {
-                let decompressContent = parts.value[ 2 ];
+            let json = JSON.parse( decompressedContent );
+            
+            let embeddedFiles = await this.getExcalidrawEmbeddedFiles( excalidrawContent );
+            
+            let blob = exportToBlob
+            ( {
+                elements : json['elements'],
+                files    : embeddedFiles
+            } );
                 
-                let cleanedData = "";
-                const length = decompressContent.length;
+            if ( blob )
+            {
+                imageFileName = `excalidraw-${ Date.now() }.png`;
 
-                for ( let i = 0; i < length; i++ )
+                try
                 {
-                    const char = decompressContent[ i ];
-                    if ( char !== "\n" && char !== "\r" )
+                    const actualBlob = await blob;
+                    const arrayBuffer = await actualBlob.arrayBuffer();
+                    const activeFile = this.plugin.app.workspace.getActiveFile();
+                    const folderPath = activeFile?.parent?.path || "";
+                    const filePath = `${ folderPath }/${ imageFileName }`;
+                    await this.plugin.app.vault.createBinary( filePath, arrayBuffer );
+
+                    if ( !this.tempExcalidrawImages )
                     {
-                        cleanedData += char;
+                        this.tempExcalidrawImages = [];
                     }
+                    
+                    this.tempExcalidrawImages.push( filePath );
+
+                    return imageFileName;
                 }
-            
-                let decompressedContent = LZString.decompressFromBase64( cleanedData );
-                let json = JSON.parse( decompressedContent );
-
-                let blob = exportToBlob
-                ( {
-                    elements : json['elements'],
-                    files    : {}
-                } );
-                
-                if ( blob )
+                catch ( error )
                 {
-                    imageFileName = `excalidraw-${ Date.now() }.png`;
-
-                    blob.then( async( actualBlob ) =>
-                    {
-                        const arrayBuffer = await actualBlob.arrayBuffer();
-                        const activeFile = this.plugin.app.workspace.getActiveFile();
-                        const folderPath = activeFile?.parent?.path || "";
-                        const filePath = `${ folderPath }/${ fileName }`;
-                        await this.plugin.app.vault.createBinary( filePath, arrayBuffer );
-                    } )
-                    .catch( error =>
-                    {
-                        console.error( "Error saving PNG file:", error );
-                    } );
+                    console.error( "Error saving PNG file:", error );
+                    return null;
                 }
             }
         }
         
         return imageFileName;
+    }
+    
+    private async cleanupTempExcalidrawImages() : Promise<void>
+    {
+        if ( this.tempExcalidrawImages && this.tempExcalidrawImages.length > 0 )
+        {
+            for ( const filePath of this.tempExcalidrawImages )
+            {
+                try
+                {
+                    await this.plugin.app.vault.adapter.remove( filePath );
+                }
+                catch ( error )
+                {
+                    console.error( `Error removing temporary file ${ filePath }:`, error );
+                }
+            }
+            
+            this.tempExcalidrawImages = [];
+        }
+    }
+    
+    private decompressExcalidrawContent( content : string ) : string
+    {
+        let match = content.matchAll( DRAWING_COMPRESSED_REG );
+        let parts;
+
+        parts = match.next();
+
+        if ( parts.done ) 
+        {
+            match = content.matchAll( DRAWING_COMPRESSED_REG_FALLBACK );
+            parts = match.next();
+        }
+
+        if ( parts.value && parts.value.length > 1 )
+        {
+            let decompressContent = parts.value[ 2 ];
+            
+            let cleanedData = "";
+            const length = decompressContent.length;
+
+            for ( let i = 0; i < length; i++ )
+            {
+                const char = decompressContent[ i ];
+                if ( char !== "\n" && char !== "\r" )
+                {
+                    cleanedData += char;
+                }
+            }
+        
+            return LZString.decompressFromBase64( cleanedData );
+        }
+        
+        return content;
+    }
+    
+    private async getExcalidrawEmbeddedFiles( content : string ) : Promise<Record<string, SafeAny>>
+    {
+        const embeddedFiles: Record<string, SafeAny> = {};
+        const embeddedFilesMatch = content.match(/## Embedded Files\s+([\s\S]*?)(?=\s*##|$)/);
+
+        if ( embeddedFilesMatch && embeddedFilesMatch[ 1 ] )
+        {
+            const fileEntries = embeddedFilesMatch[ 1 ].trim().split( "\n" );
+
+            for ( const entry of fileEntries )
+            {
+                const fileMatch = entry.match( /([a-f0-9]+):\s*\[\[(.*?)\]\]/ );
+
+                if ( fileMatch && fileMatch.length >= 3 )
+                {
+                    const fileId = fileMatch[ 1 ];
+                    const filePath = fileMatch[ 2 ].trim();
+
+                    try
+                    {
+                        const imageFile = this.plugin.app.metadataCache.getFirstLinkpathDest( filePath, filePath );
+
+                        if ( imageFile instanceof TFile )
+                        {
+                            const fileContent = await this.plugin.app.vault.readBinary( imageFile );
+                            const fileType = fileTypeChecker.detectFile( fileContent );
+                            const mimeType = fileType?.mimeType || "image/png";
+
+                            const base64Content = this.arrayBufferToBase64String( fileContent );
+                            const dataURL = `data:${ mimeType };base64,${ base64Content }`;
+
+                            embeddedFiles[ fileId ] =
+                            {
+                                id : fileId, dataURL, mimeType, created : Date.now(), lastRetrieved : Date.now()
+                            };
+                        }
+                    }
+                    catch ( error )
+                    {
+                        console.error( `Error loading embedded file ${ filePath }:`, error );
+                    }
+                }
+            }
+        }
+        
+        return embeddedFiles;
     }
 
     private async updatePostImages( params : {
@@ -336,12 +447,14 @@ export abstract class AbstractWordPressClient implements WordPressClient
                     const imgFile = this.plugin.app.metadataCache.getFirstLinkpathDest( img.src, fileName );
                     if ( imgFile instanceof TFile )
                     {
-                        const content  = await this.plugin.app.vault.readBinary( imgFile );
+                        const content = await this.plugin.app.vault.readBinary( imgFile );
                         const fileType = fileTypeChecker.detectFile( content );
                         
                         const result = await this.uploadMedia
                         ( {
-                            mimeType : fileType?.mimeType ?? "application/octet-stream", fileName : imgFile.name, content : content
+                            mimeType : fileType?.mimeType ?? "application/octet-stream", 
+                            fileName : imgFile.name, 
+                            content : content
                         }, auth );
                         
                         if ( result.code === WordPressClientReturnCode.OK )
@@ -893,6 +1006,29 @@ ${ content }
 
             blocks.push( this.createWpBlock( "mediaron/alerts-dlx-chakra", alertContent, alertAttributes ) );
         }
+    }
+
+    /**
+     * ArrayBuffer를 Base64 문자열로 변환합니다.
+     * @param buffer 변환할 ArrayBuffer
+     * @returns Base64로 인코딩된 문자열
+     */
+    private arrayBufferToBase64String(buffer: ArrayBuffer): string {
+        // 바이트 배열로 변환
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        const len = bytes.byteLength;
+        
+        for (let i = 0; i < len; i++) {
+            binary += String.fromCharCode(bytes[i]);
+        }
+        
+        // Base64로 인코딩
+        return window.btoa(binary);
+    }
+
+    private escapeRegExp(str: string): string {
+        return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 }
 
