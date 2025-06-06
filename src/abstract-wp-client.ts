@@ -752,6 +752,40 @@ export abstract class AbstractWordPressClient implements WordPressClient
                 continue;
             }
 
+            // 테이블 처리 (시작)
+            if ( line.match( /^<table>/ ) )
+            {
+                let tableContent = "";
+                let j = i;
+                
+                // 테이블 전체 내용 수집
+                while ( j < htmlLines.length )
+                {
+                    const tableLine = htmlLines[ j ];
+                    tableContent += tableLine;
+                    if ( tableLine.includes( "</table>" ) )
+                    {
+                        break;
+                    }
+                    if ( j > i )
+                    {
+                        tableContent += "\n";
+                    }
+                    j++;
+                }
+                
+                // 테이블 헤더와 바디 분리
+                const hasHead = tableContent.includes( "<thead>" );
+                const hasFoot = tableContent.includes( "<tfoot>" );
+                
+                // 테이블 어트리뷰트 설정
+                const tableAttributes = ` {"hasFixedLayout":true,"className":"is-style-regular"}`;
+                
+                blocks.push( this.createWpBlock( "table", this.formatTableContent( tableContent, hasHead, hasFoot ), tableAttributes ) );
+                i = j + 1;
+                continue;
+            }
+
             // 코드 블록 처리 (시작)
             if ( line.match( /^<pre>/ ) )
             {
@@ -1029,6 +1063,30 @@ ${ content }
 
     private escapeRegExp(str: string): string {
         return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    /**
+     * HTML 테이블 콘텐츠를 워드프레스 테이블 블록에 맞게 포맷팅합니다.
+     * @param tableContent 원본 HTML 테이블 콘텐츠
+     * @param hasHead 테이블 헤더 포함 여부
+     * @param hasFoot 테이블 푸터 포함 여부
+     * @returns 워드프레스 테이블 블록에 맞게 포맷팅된 HTML
+     */
+    private formatTableContent( tableContent : string, hasHead : boolean, hasFoot : boolean ) : string
+    {
+        // 원본 테이블 클래스 및 스타일 속성 추가
+        const formattedTable = tableContent.replace( 
+            /<table>/, 
+            '<figure class="wp-block-table is-style-regular"><table class="has-fixed-layout">' 
+        );
+        
+        // 테이블 닫는 태그 수정
+        const finalTable = formattedTable.replace( 
+            /<\/table>/, 
+            '</table></figure>' 
+        );
+        
+        return finalTable;
     }
 }
 
